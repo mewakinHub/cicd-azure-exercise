@@ -1,4 +1,4 @@
-**NOTE**: see exercise & set-up guide me /docs 
+**NOTE**: see exercise & set-up guide me /documents
 
 ### has 2 exercises before start working:
   1. clean code microservice using fastAPI (DDD demo, I'll do more practice on design pattern on another repo and inside real work from summer intern that I can't share)
