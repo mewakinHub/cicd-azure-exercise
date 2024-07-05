@@ -1,0 +1,11 @@
+# Set the default behavior, in case people don't have core.autocrlf set.
+* text=auto
+
+# Explicitly declare text files to prevent any CRLF issues.
+*.txt text
+*.md text
+*.py text
+
+# Denote all binary files for better handling
+*.png binary
+*.jpg binary

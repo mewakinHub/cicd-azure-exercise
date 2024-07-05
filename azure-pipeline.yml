@@ -1,0 +1,157 @@
+trigger: # pipeline triggers on changes to the main branch (push)
+- main
+
+pr: # pipeline will run on pull requests to the main branch
+- main
+
+variables:
+  GCP_PROJECT_ID: 'cpf-aiml-innovation'
+  DOCKER_IMAGE: 'asia-southeast1-docker.pkg.dev/cpf-aiml-innovation/intern-mew2-exercise/mew2-image'
+  JSON_KEY_FILE: 'cpf-aiml-innovation-61af10fd34f9.json'
+  SERVICE_ACCOUNT_EMAIL: 'aiml-workflow-innovation@cpf-aiml-innovation.iam.gserviceaccount.com'
+  REGION: 'asia-southeast1'
+  BUILD_ID: $(Build.BuildId)
+  SERVICE_NAME: 'mew2-service'
+
+pool:
+  # Specifies the VM image to use for running the pipeline (ubuntu-latest)
+  vmImage: 'ubuntu-latest'
+
+steps: # (each step can be either script or task)
+- checkout: self
+
+# Tasks abstract more complex operations into simpler, parameterized forms 
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.8'
+    addToPath: true
+
+# Script contains shell commands that are executed
+- script: |
+    sudo apt-get update
+    sudo apt-get install -y build-essential python3-dev
+    pip install --upgrade pip
+  displayName: 'Install build dependencies'
+
+- script: |
+    # echo $(GCP_KEYFILE_JSON) > $(JSON_KEY_FILE) # only in case that you do not have JSON_KEY_FILE already
+    pip install -r requirements.txt
+  displayName: 'Install dependencies'
+
+- script: |
+    pip show pytest-cov
+  displayName: 'Verify pytest-cov installation'
+
+- script: |
+    pytest --cov=app app/tests/
+    coverage xml # converts coverage data to an XML format for further use in the pipeline, such as reporting.
+  displayName: 'Run Unit Tests with Coverage'
+
+- task: PublishTestResults@2
+  inputs:
+    testResultsFiles: '**/TEST-*.xml'
+  condition: succeededOrFailed()
+
+- task: PublishCodeCoverageResults@1
+  inputs:
+    codeCoverageTool: 'Cobertura'
+    summaryFileLocation: 'coverage.xml'
+  condition: succeededOrFailed()
+
+# securely downloads the key file to the agent's temporary directory during the pipeline run
+# do not want to hardcode key file in repo or in environment variables (not secure)
+- task: DownloadSecureFile@1
+  name: downloadJsonKey
+  inputs:
+    secureFile: $(JSON_KEY_FILE)
+  displayName: 'Download GCP JSON Key File'
+
+# Verify that the JSON key file is correctly downloaded and can be used
+- script: |
+    echo "Verifying JSON key file..."
+    cat $(downloadJsonKey.secureFilePath) | jq . # print content inside
+  displayName: 'Verify JSON Key File'
+
+- script: |
+    # authenticate using the downloaded JSON key file
+    echo "Setting GOOGLE_APPLICATION_CREDENTIALS to $(downloadJsonKey.secureFilePath)"
+    export GOOGLE_APPLICATION_CREDENTIALS=$(downloadJsonKey.secureFilePath)
+    gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+    gcloud config set project $(GCP_PROJECT_ID)
+
+    # Verify authentication
+    gcloud projects list
+    gcloud auth list --filter=status:ACTIVE --format="value(account)"
+  displayName: 'Authenticate with GCP and Verify Permissions'
+
+- script: |
+    sudo apt-get update && sudo apt-get install -y unzip
+    curl -sLO https://releases.hashicorp.com/terraform/1.4.6/terraform_1.4.6_linux_amd64.zip
+    unzip terraform_1.4.6_linux_amd64.zip
+    sudo mv terraform /usr/local/bin/
+  displayName: 'Install Terraform'
+
+- script: |
+    terraform init
+    terraform plan -out=tfplan -var="project_id=$(GCP_PROJECT_ID)" -var="region=$(REGION)" -var="credentials_file=$(downloadJsonKey.secureFilePath)" -var="service_account_email=$(SERVICE_ACCOUNT_EMAIL)"
+    terraform apply tfplan
+  displayName: 'Run Terraform to setup Artifact Registry'
+
+# Add debug and timeout for Docker configuration step
+- script: |
+    echo "Starting Docker configuration with GCP credentials..."
+    timeout 5m gcloud auth configure-docker asia-southeast1-docker.pkg.dev --quiet --verbosity=debug
+    if [ $? -eq 124 ]; then
+      echo "Docker configuration timed out"
+      exit 1
+    else
+      echo "Docker configuration completed"
+    fi
+  displayName: 'Configure Docker to use GCP credentials'
+
+- script: |
+    gcloud info
+    cat $HOME/.docker/config.json
+  displayName: 'Show gcloud and Docker config'
+
+- script: |
+    docker build -t $(DOCKER_IMAGE):$(BUILD_ID) .
+    docker push $(DOCKER_IMAGE):$(BUILD_ID)
+  displayName: 'Build and Push Docker image to Google Artifact Registry'
+
+# Simplified deploy step
+- script: |
+    echo "Deploying to Cloud Run..."
+    gcloud run deploy $(SERVICE_NAME) \
+      --image $(DOCKER_IMAGE):$(BUILD_ID) \
+      --platform managed \
+      --region $(REGION) \
+      --allow-unauthenticated \
+      --set-env-vars GOOGLE_APPLICATION_CREDENTIALS=$(downloadJsonKey.secureFilePath)
+    if [ $? -ne 0 ]; then
+      echo "Initial deployment failed. Checking if the service exists..."
+      if ! gcloud run services describe $(SERVICE_NAME) --region $(REGION); then
+        echo "Service $(SERVICE_NAME) does not exist. Creating new service..."
+        gcloud run deploy $(SERVICE_NAME) \
+          --image $(DOCKER_IMAGE):$(BUILD_ID) \
+          --platform managed \
+          --region $(REGION) \
+          --allow-unauthenticated
+      else
+        echo "Service $(SERVICE_NAME) already exists. Updating service..."
+        gcloud run deploy $(SERVICE_NAME) \
+          --image $(DOCKER_IMAGE):$(BUILD_ID) \
+          --platform managed \
+          --region $(REGION) \
+          --allow-unauthenticated
+      fi
+    fi
+  displayName: 'Deploy to Cloud Run'
+  timeoutInMinutes: 15 # Set a timeout for the deployment step
+
+# export GOOGLE_APPLICATION_CREDENTIALS="/home/t_teetawat_bus/cpf-aiml-innovation-61af10fd34f9.json"
+# gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+# gcloud config set project cpf-aiml-innovation
+# gcloud projects get-iam-policy cpf-aiml-innovation
+# gcloud iam roles list --project cpf-aiml-innovation
+# gcloud artifacts repositories list --project cpf-aiml-innovation

@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caching files
+.vscode/
+*.pyc
+
+# pytest cache
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS specific
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Virtual environment
+venv/
+*.venv
+env/
+
+# Sphinx documentation
+docs/_build/
